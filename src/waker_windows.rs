@@ -1,4 +1,4 @@
-use libftd2xx::Ftdi as FtdiBase;
+use libftd2xx::{Ftdi as FtdiBase, FtdiCommon};
 use std::ffi::c_void;
 use tokio::sync::mpsc::UnboundedSender;
 

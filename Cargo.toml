@@ -12,3 +12,6 @@ libftd2xx-ffi = "*"
 [dependencies.libftd2xx]
 version = "0.32"
 features = ["static"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2" 

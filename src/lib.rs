@@ -7,10 +7,18 @@ use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
 };
-use waker::Waker;
-use waker::WakerHandle;
 
-mod waker;
+#[cfg(target_os = "linux")]
+mod waker_linux;
+
+#[cfg(target_os = "linux")]
+use waker_linux::{Waker, WakerHandle};
+
+#[cfg(target_os = "windows")]
+mod waker_windows;
+
+#[cfg(target_os = "windows")]
+use waker_windows::{Waker, WakerHandle};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum StopBits {
@@ -80,7 +88,7 @@ impl Handler {
         command_rx: UnboundedReceiver<Command>,
         event_tx: UnboundedSender<Event>,
     ) {
-        let device = match FtdiBase::with_serial_number(&serial_number) {
+        let mut device = match FtdiBase::with_serial_number(&serial_number) {
             Ok(device) => {
                 let _ = open_channel.send(Ok(()));
                 device
@@ -91,7 +99,7 @@ impl Handler {
             }
         };
 
-        let waker = Waker::spawn(&mut device, command_tx);
+        let waker = Waker::spawn(&mut device, command_tx.clone());
 
         let mut this = Handler {
             command_tx,
