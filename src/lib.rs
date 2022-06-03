@@ -62,6 +62,9 @@ pub fn status_to_io_error(status: FtStatus) -> io::Error {
 
 pub struct Ftdi {
     buffer: VecDeque<u8>,
+    command_tx: UnboundedSender<Command>,
+    event_rx: UnboundedReceiver<Event>,
+    error: Option<io::Error>,
 }
 
 impl Ftdi {
@@ -87,6 +90,11 @@ impl Ftdi {
             }
         }
         return buf.remaining() == 0;
+    }
+
+    fn poll_command_queue(&mut self) {
+        // poll the command queue, fetch all data, and return before blocking
+        todo!()
     }
 }
 
@@ -209,18 +217,23 @@ impl AsyncRead for Ftdi {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        self.poll_command_queue();
+        if let Some(err) = self.error {
+            return Poll::Ready(Err(err));
+        }
         if self.push_to_output_buffer(buf) {
             return Poll::Ready(Ok(()));
         }
         loop {
-            match self.receier.poll_recv(cx) {
-                Poll::Ready(Some(Ok(x))) => {
+            match self.event_rx.poll_recv(cx) {
+                Poll::Ready(Some(Event(Ok(x)))) => {
                     self.buffer.extend(&x);
                     if self.push_to_output_buffer(buf) {
                         return Poll::Ready(Ok(()));
                     }
                 }
-                Poll::Ready(Some(Err(x))) => {
+                Poll::Ready(Some(Event(Err(x)))) => {
+                    self.error = Some(x);
                     return Poll::Ready(Err(x));
                 }
                 Poll::Ready(None) => {
@@ -238,15 +251,12 @@ impl AsyncWrite for Ftdi {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        let mut lock = self.sender_error.lock().unwrap();
-        if let Some(err) = lock.take() {
-            return Poll::Ready(Err(err));
+        self.poll_command_queue();
+
+        if let Some(err) = &self.error {
+            return Poll::Ready(Err(err.clone()));
         }
-        if self
-            .sender
-            .send(BridgeHandlerCommand::Data(buf.to_vec()))
-            .is_err()
-        {
+        if self.command_tx.send(Command::Send(buf.to_vec())).is_err() {
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Disconnected")));
         }
         Poll::Ready(Ok(buf.len()))
@@ -262,15 +272,13 @@ impl AsyncWrite for Ftdi {
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        let _ = self.sender.send(BridgeHandlerCommand::Cancel);
-        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self.command_tx.send(Command::Cancel);
         Poll::Ready(Ok(()))
     }
 }
 
 impl Drop for Ftdi {
     fn drop(&mut self) {
-        let _ = self.sender.send(BridgeHandlerCommand::Cancel);
-        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self.command_tx.send(Command::Cancel);
     }
 }
