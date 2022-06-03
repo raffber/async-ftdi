@@ -3,21 +3,19 @@ use libc::{
     pthread_cond_wait, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock,
     pthread_mutex_t, pthread_mutex_unlock,
 };
-use libftd2xx::{Ftdi as FtdiBase, FtdiCommon};
-use libftd2xx_ffi::{FT_SetEventNotification, FT_EVENT_RXCHAR};
+use libftd2xx::{FtStatus, Ftdi as FtdiBase, FtdiCommon};
+use libftd2xx_ffi::{FT_SetEventNotification, FT_EVENT_RXCHAR, FT_STATUS};
 use std::{
     ffi::c_void,
+    io,
     mem::MaybeUninit,
     ptr::null,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::Command;
+use crate::{status_to_io_error, Command};
 
 pub(crate) struct Waker {
     cancel: Arc<Mutex<bool>>,
@@ -41,7 +39,7 @@ impl Waker {
     pub(crate) fn spawn(
         device: &mut FtdiBase,
         command_tx: UnboundedSender<Command>,
-    ) -> WakerHandle {
+    ) -> io::Result<WakerHandle> {
         let handle = device.handle();
 
         let mut eh = unsafe {
@@ -57,13 +55,20 @@ impl Waker {
         };
 
         let event_mask = FT_EVENT_RXCHAR;
-        let status = unsafe {
+        let status: FT_STATUS = unsafe {
             FT_SetEventNotification(
                 handle,
                 event_mask,
                 eh.as_mut() as *mut EventHandle as *mut c_void,
             )
         };
+        if status != 0 {
+            unsafe {
+                pthread_cond_destroy(&mut eh.e_cond_var as *mut pthread_cond_t);
+                pthread_mutex_destroy(&mut eh.e_mutex as *mut pthread_mutex_t);
+            }
+            return Err(status_to_io_error(FtStatus::from(status)));
+        }
 
         let cond_var = &mut eh.e_cond_var as *mut pthread_cond_t;
         let cancel = Arc::new(Mutex::new(false));
@@ -74,7 +79,7 @@ impl Waker {
         };
         thread::spawn(move || waker.run());
 
-        WakerHandle { cancel, cond_var }
+        Ok(WakerHandle { cancel, cond_var })
     }
 
     fn run(mut self) {
@@ -110,6 +115,7 @@ impl Drop for WakerHandle {
     fn drop(&mut self) {
         let mut lock = self.cancel.lock().unwrap();
         if !*lock {
+            *lock = true;
             unsafe {
                 pthread_cond_signal(self.cond_var);
             }

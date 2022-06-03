@@ -1,8 +1,17 @@
+use std::collections::VecDeque;
 use std::io;
+use std::io::ErrorKind;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+use std::time::Duration;
 
 use libftd2xx::FtStatus;
 use libftd2xx::Ftdi as FtdiBase;
 use libftd2xx::FtdiCommon;
+use libftd2xx::TimeoutError;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -51,7 +60,9 @@ pub fn status_to_io_error(status: FtStatus) -> io::Error {
     io::Error::new(io::ErrorKind::Other, status.to_string())
 }
 
-pub struct Ftdi {}
+pub struct Ftdi {
+    buffer: VecDeque<u8>,
+}
 
 impl Ftdi {
     async fn open(serial_number: String, params: &SerialParams) -> io::Result<Ftdi> {
@@ -60,6 +71,22 @@ impl Ftdi {
 
     async fn close(self) -> io::Result<()> {
         todo!()
+    }
+
+    fn push_to_output_buffer(&mut self, buf: &mut tokio::io::ReadBuf<'_>) -> bool {
+        if !self.buffer.is_empty() {
+            loop {
+                if buf.remaining() == 0 {
+                    return true;
+                }
+                if let Some(x) = self.buffer.pop_front() {
+                    buf.put_slice(&[x]);
+                } else {
+                    break;
+                }
+            }
+        }
+        return buf.remaining() == 0;
     }
 }
 
@@ -89,17 +116,29 @@ impl Handler {
         event_tx: UnboundedSender<Event>,
     ) {
         let mut device = match FtdiBase::with_serial_number(&serial_number) {
-            Ok(device) => {
-                let _ = open_channel.send(Ok(()));
-                device
-            }
+            Ok(device) => device,
             Err(status) => {
                 let _ = open_channel.send(Err(status_to_io_error(status)));
                 return;
             }
         };
+        if let Err(status) =
+            device.set_timeouts(Duration::from_millis(100), Duration::from_millis(100))
+        {
+            let _ = open_channel.send(Err(status_to_io_error(status)));
+            return;
+        }
 
-        let waker = Waker::spawn(&mut device, command_tx.clone());
+        let waker = match Waker::spawn(&mut device, command_tx.clone()) {
+            Ok(x) => x,
+            Err(err) => {
+                let _ = open_channel.send(Err(err));
+                let _ = device.close();
+                return;
+            }
+        };
+
+        let _ = open_channel.send(Ok(()));
 
         let mut this = Handler {
             command_tx,
@@ -109,21 +148,129 @@ impl Handler {
             waker,
         };
 
-        this.run_loop();
+        if let Err(err) = this.run_loop() {
+            this.event_tx.send(Event(Err(err)));
+        }
         let _ = this.device.close();
     }
 
-    fn run_loop(&mut self) {
+    fn send_data(&mut self, data: Vec<u8>) -> io::Result<()> {
+        let mut start_idx = 0;
+        loop {
+            match self.device.write_all(&data[start_idx..]) {
+                Ok(_) => break,
+                Err(TimeoutError::Timeout { actual, .. }) => {
+                    start_idx += actual;
+                }
+                Err(TimeoutError::FtStatus(status)) => {
+                    return Err(status_to_io_error(status));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_read(&mut self) -> io::Result<Vec<u8>> {
+        let num_bytes = self.device.queue_status().map_err(status_to_io_error)?;
+        let mut buf = vec![0_u8; num_bytes];
+        match self.device.read_all(&mut buf) {
+            Ok(_) => Ok(buf),
+            Err(TimeoutError::Timeout { .. }) => {
+                // we don't expect this to happen...
+                Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "Timeout occurred emptying buffer",
+                ))
+            }
+            Err(TimeoutError::FtStatus(status)) => Err(status_to_io_error(status)),
+        }
+    }
+
+    fn run_loop(&mut self) -> io::Result<()> {
         while let Some(msg) = self.command_rx.blocking_recv() {
             match msg {
                 Command::Cancel => break,
                 Command::PollRead => {
-                    // TODO: readd all that's available, push it to the channel
+                    let data = self.poll_read()?;
+                    if self.event_tx.send(Event(Ok(data))).is_err() {
+                        break;
+                    }
                 }
-                Command::Send(data) => {
-                    // TODO: push everything to device
-                }
+                Command::Send(data) => self.send_data(data)?,
             }
         }
+        Ok(())
+    }
+}
+
+impl AsyncRead for Ftdi {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.push_to_output_buffer(buf) {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            match self.receier.poll_recv(cx) {
+                Poll::Ready(Some(Ok(x))) => {
+                    self.buffer.extend(&x);
+                    if self.push_to_output_buffer(buf) {
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+                Poll::Ready(Some(Err(x))) => {
+                    return Poll::Ready(Err(x));
+                }
+                Poll::Ready(None) => {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Disconnected")));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl AsyncWrite for Ftdi {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let mut lock = self.sender_error.lock().unwrap();
+        if let Some(err) = lock.take() {
+            return Poll::Ready(Err(err));
+        }
+        if self
+            .sender
+            .send(BridgeHandlerCommand::Data(buf.to_vec()))
+            .is_err()
+        {
+            return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Disconnected")));
+        }
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        // TODO: send a flush message and send a oneshot
+        // then keep polling that oneshot
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        let _ = self.sender.send(BridgeHandlerCommand::Cancel);
+        self.cancel.store(true, Ordering::Relaxed);
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for Ftdi {
+    fn drop(&mut self) {
+        let _ = self.sender.send(BridgeHandlerCommand::Cancel);
+        self.cancel.store(true, Ordering::Relaxed);
     }
 }
