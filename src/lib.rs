@@ -4,14 +4,18 @@ use std::io::ErrorKind;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::thread;
 use std::time::Duration;
 
+use libftd2xx::BitsPerWord;
 use libftd2xx::FtStatus;
 use libftd2xx::Ftdi as FtdiBase;
 use libftd2xx::FtdiCommon;
 use libftd2xx::TimeoutError;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -44,16 +48,44 @@ pub enum Parity {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum DataBits {
-    Five,
-    Six,
     Seven,
     Eight,
 }
+
+#[derive(Clone)]
 pub struct SerialParams {
     pub baud: u32,
     pub data_bits: DataBits,
     pub stop_bits: StopBits,
     pub parity: Parity,
+}
+
+impl From<StopBits> for libftd2xx::StopBits {
+    fn from(x: StopBits) -> Self {
+        match x {
+            StopBits::One => libftd2xx::StopBits::Bits1,
+            StopBits::Two => libftd2xx::StopBits::Bits2,
+        }
+    }
+}
+
+impl From<DataBits> for BitsPerWord {
+    fn from(x: DataBits) -> Self {
+        match x {
+            DataBits::Seven => BitsPerWord::Bits7,
+            DataBits::Eight => BitsPerWord::Bits8,
+        }
+    }
+}
+
+impl From<Parity> for libftd2xx::Parity {
+    fn from(x: Parity) -> Self {
+        match x {
+            Parity::None => libftd2xx::Parity::No,
+            Parity::Odd => libftd2xx::Parity::Odd,
+            Parity::Even => libftd2xx::Parity::Even,
+        }
+    }
 }
 
 pub fn status_to_io_error(status: FtStatus) -> io::Error {
@@ -68,11 +100,37 @@ pub struct Ftdi {
 }
 
 impl Ftdi {
-    async fn open(serial_number: String, params: &SerialParams) -> io::Result<Ftdi> {
-        todo!()
+    pub async fn open(serial_number: String, params: &SerialParams) -> io::Result<Ftdi> {
+        let (open_tx, open_rx) = oneshot::channel();
+        let (command_tx, command_rx) = unbounded_channel();
+        let (event_tx, event_rx) = unbounded_channel();
+        thread::spawn({
+            let event_tx = event_tx.clone();
+            let params = params.clone();
+            let command_tx = command_tx.clone();
+            move || {
+                Handler::run(
+                    serial_number,
+                    params.clone(),
+                    open_tx,
+                    command_tx,
+                    command_rx,
+                    event_tx,
+                )
+            }
+        });
+
+        open_rx.await.unwrap()?;
+
+        Ok(Ftdi {
+            buffer: VecDeque::new(),
+            command_tx,
+            event_rx,
+            error: None,
+        })
     }
 
-    async fn close(self) -> io::Result<()> {
+    pub async fn close(self) -> io::Result<()> {
         todo!()
     }
 
@@ -92,9 +150,23 @@ impl Ftdi {
         return buf.remaining() == 0;
     }
 
-    fn poll_command_queue(&mut self) {
-        // poll the command queue, fetch all data, and return before blocking
-        todo!()
+    fn poll_event_queue(&mut self) -> io::Result<()> {
+        loop {
+            match self.event_rx.try_recv() {
+                Ok(Event(Ok(x))) => {
+                    self.buffer.extend(x);
+                }
+                Ok(Event(Err(x))) => {
+                    let ret = clone_io_error(&x);
+                    self.error = Some(x);
+                    return Err(ret);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    return Err(io::Error::new(ErrorKind::Other, "Channel Disconnected"))
+                }
+                Err(TryRecvError::Empty) => return Ok(()),
+            }
+        }
     }
 }
 
@@ -107,11 +179,14 @@ enum Command {
 struct Event(io::Result<Vec<u8>>);
 
 struct Handler {
-    command_tx: UnboundedSender<Command>,
     command_rx: UnboundedReceiver<Command>,
     event_tx: UnboundedSender<Event>,
-    waker: WakerHandle,
+    _waker: WakerHandle,
     device: FtdiBase,
+}
+
+fn clone_io_error(err: &io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{}", err))
 }
 
 impl Handler {
@@ -137,6 +212,11 @@ impl Handler {
             return;
         }
 
+        if let Err(x) = Self::apply_params(&mut device, &params) {
+            let _ = open_channel.send(Err(x));
+            return;
+        }
+
         let waker = match Waker::spawn(&mut device, command_tx.clone()) {
             Ok(x) => x,
             Err(err) => {
@@ -149,17 +229,32 @@ impl Handler {
         let _ = open_channel.send(Ok(()));
 
         let mut this = Handler {
-            command_tx,
             command_rx,
             event_tx,
             device,
-            waker,
+            _waker: waker,
         };
 
         if let Err(err) = this.run_loop() {
-            this.event_tx.send(Event(Err(err)));
+            let _ = this.event_tx.send(Event(Err(err)));
         }
         let _ = this.device.close();
+    }
+
+    fn apply_params(device: &mut FtdiBase, params: &SerialParams) -> io::Result<()> {
+        device
+            .set_baud_rate(params.baud)
+            .map_err(status_to_io_error)?;
+
+        device
+            .set_data_characteristics(
+                params.data_bits.into(),
+                params.stop_bits.into(),
+                params.parity.into(),
+            )
+            .map_err(status_to_io_error)?;
+
+        Ok(())
     }
 
     fn send_data(&mut self, data: Vec<u8>) -> io::Result<()> {
@@ -217,9 +312,12 @@ impl AsyncRead for Ftdi {
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        self.poll_command_queue();
-        if let Some(err) = self.error {
-            return Poll::Ready(Err(err));
+        if let Err(x) = self.poll_event_queue() {
+            self.error = Some(x);
+        }
+
+        if let Some(err) = &self.error {
+            return Poll::Ready(Err(clone_io_error(err)));
         }
         if self.push_to_output_buffer(buf) {
             return Poll::Ready(Ok(()));
@@ -232,9 +330,10 @@ impl AsyncRead for Ftdi {
                         return Poll::Ready(Ok(()));
                     }
                 }
-                Poll::Ready(Some(Event(Err(x)))) => {
-                    self.error = Some(x);
-                    return Poll::Ready(Err(x));
+                Poll::Ready(Some(Event(Err(err)))) => {
+                    let ret = clone_io_error(&err);
+                    self.error = Some(err);
+                    return Poll::Ready(Err(ret));
                 }
                 Poll::Ready(None) => {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Disconnected")));
@@ -247,14 +346,16 @@ impl AsyncRead for Ftdi {
 
 impl AsyncWrite for Ftdi {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.poll_command_queue();
+        if let Err(x) = self.poll_event_queue() {
+            self.error = Some(x);
+        }
 
         if let Some(err) = &self.error {
-            return Poll::Ready(Err(err.clone()));
+            return Poll::Ready(Err(clone_io_error(err)));
         }
         if self.command_tx.send(Command::Send(buf.to_vec())).is_err() {
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Disconnected")));
