@@ -7,6 +7,7 @@ use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
+use libftd2xx::list_devices;
 use libftd2xx::BitsPerWord;
 use libftd2xx::FtStatus;
 use libftd2xx::Ftdi as FtdiBase;
@@ -24,6 +25,7 @@ use tokio::sync::{
 #[cfg(target_os = "linux")]
 mod waker_linux;
 
+use tokio::task::spawn_blocking;
 #[cfg(target_os = "linux")]
 use waker_linux::{Waker, WakerHandle};
 
@@ -99,8 +101,16 @@ pub struct Ftdi {
     error: Option<io::Error>,
 }
 
+pub use libftd2xx::DeviceInfo;
+
 impl Ftdi {
-    pub async fn open(serial_number: String, params: &SerialParams) -> io::Result<Ftdi> {
+    pub async fn list_all() -> io::Result<Vec<DeviceInfo>> {
+        spawn_blocking(|| list_devices().map_err(status_to_io_error))
+            .await
+            .unwrap()
+    }
+
+    pub async fn open(serial_number: &str, params: &SerialParams) -> io::Result<Ftdi> {
         let (open_tx, open_rx) = oneshot::channel();
         let (command_tx, command_rx) = unbounded_channel();
         let (event_tx, event_rx) = unbounded_channel();
@@ -108,6 +118,7 @@ impl Ftdi {
             let event_tx = event_tx.clone();
             let params = params.clone();
             let command_tx = command_tx.clone();
+            let serial_number = serial_number.to_owned();
             move || {
                 Handler::run(
                     serial_number,
