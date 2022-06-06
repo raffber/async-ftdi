@@ -1,14 +1,12 @@
 use std::{
     ffi::{c_void, CString},
-    io,
-    os::raw::c_char,
-    ptr,
+    io, ptr,
     sync::{Arc, Mutex},
     thread,
 };
 
 use libftd2xx::{Ftdi as FtdiBase, FtdiCommon};
-use libftd2xx_ffi::{FT_SetEventNotification, FT_EVENT_RXCHAR, FT_STATUS};
+use libftd2xx_ffi::{FT_SetEventNotification, FT_EVENT_RXCHAR};
 use tokio::sync::mpsc::UnboundedSender;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
