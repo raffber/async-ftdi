@@ -1,6 +1,8 @@
-use std::io;
+use std::{io, time::Duration};
 
 use async_ftdi::{DataBits, Ftdi, Parity, SerialParams, StopBits};
+use tokio::io::AsyncReadExt;
+use tokio::{sync::oneshot, task, time::sleep};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -18,5 +20,29 @@ async fn main() -> io::Result<()> {
         parity: Parity::Even,
     };
     let ftdi = Ftdi::open(&ftdi_info.serial_number, &params).await?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    task::spawn(reader_and_cancel(ftdi, shutdown_rx));
+    sleep(Duration::from_secs(2)).await;
+    let _ = shutdown_tx.send(());
+
     todo!();
+}
+
+async fn reader_and_cancel(ftdi: Ftdi, shutdown: oneshot::Receiver<()>) {
+    tokio::select! {
+        _ = reader(ftdi) => {},
+        _ = shutdown => {}
+    }
+}
+
+async fn reader(mut ftdi: Ftdi) -> io::Result<()> {
+    let mut print_cnt = 0;
+    loop {
+        let x = ftdi.read_u8().await?;
+        print!("0x{:x} ", x);
+        if print_cnt == 8 {
+            print!("\n");
+            print_cnt = 0;
+        }
+    }
 }
