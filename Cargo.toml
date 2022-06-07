@@ -20,6 +20,3 @@ libc = "0.2"
 windows-sys = {version = "0.36", features = [
     "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_System_WindowsProgramming" 
 ]}
-
-[patch.crates-io]
-libftd2xx-ffi = {git = "https://github.com/raffber/libftd2xx-ffi.git", rev="f9f2b436207b3362a9adcca5684bcedcc8128143"}
