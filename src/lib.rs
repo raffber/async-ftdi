@@ -291,7 +291,8 @@ impl Handler {
     fn poll_read(&mut self) -> io::Result<Vec<u8>> {
         let num_bytes = self.device.queue_status().map_err(status_to_io_error)?;
         let mut buf = vec![0_u8; num_bytes];
-        match self.device.read_all(&mut buf) {
+        log::debug!("ftdi read_all: {} bytes in queue", num_bytes);
+        let ret = match self.device.read_all(&mut buf) {
             Ok(_) => Ok(buf),
             Err(TimeoutError::Timeout { .. }) => {
                 // we don't expect this to happen...
@@ -301,7 +302,10 @@ impl Handler {
                 ))
             }
             Err(TimeoutError::FtStatus(status)) => Err(status_to_io_error(status)),
-        }
+        };
+
+        log::debug!("read_all() returned");
+        ret
     }
 
     fn run_loop(&mut self) -> io::Result<()> {

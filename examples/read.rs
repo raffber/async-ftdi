@@ -6,6 +6,8 @@ use tokio::{sync::oneshot, task, time::sleep};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    env_logger::init();
+
     let ftdis = Ftdi::list_all().await?;
     if ftdis.len() == 0 {
         println!("Not FTDIs connected!");

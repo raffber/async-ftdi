@@ -38,7 +38,8 @@ impl Waker {
 
         let lpname = CString::new("").unwrap();
 
-        let event = unsafe { CreateEventA(ptr::null(), 1, 1, lpname.as_ptr() as *const u8) };
+        // start event in signalled state to automatically get a first iteration of below loop
+        let event = unsafe { CreateEventA(ptr::null(), 0, 1, lpname.as_ptr() as *const u8) };
         unsafe {
             FT_SetEventNotification(handle, FT_EVENT_RXCHAR, event as *mut c_void);
         };
@@ -60,6 +61,7 @@ impl Waker {
             unsafe {
                 WaitForSingleObject(self.event, INFINITE);
             }
+            log::debug!("Wake-up");
             {
                 let lock = self.cancel.lock().unwrap();
                 if *lock {
