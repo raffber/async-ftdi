@@ -77,6 +77,7 @@ impl Waker {
             CloseHandle(self.event);
         }
         *lock = true;
+        log::debug!("Waker thread dropped.");
     }
 }
 

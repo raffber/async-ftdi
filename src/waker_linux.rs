@@ -12,8 +12,9 @@ use std::{
     ptr::null,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
 
 use crate::{status_to_io_error, Command};
 
@@ -75,11 +76,30 @@ impl Waker {
         let waker = Waker {
             cancel: cancel.clone(),
             event_handle: eh,
-            command_tx,
+            command_tx: command_tx.clone(),
         };
+        thread::spawn({
+            let cancel = cancel.clone();
+            move || Self::notifier(cancel, command_tx)
+        });
         thread::spawn(move || waker.run());
 
         Ok(WakerHandle { cancel, cond_var })
+    }
+
+    fn notifier(cancel: Arc<Mutex<bool>>, tx: UnboundedSender<Command>) {
+        loop {
+            thread::sleep(Duration::from_millis(20));
+            if tx.send(Command::PollRead).is_err() {
+                return;
+            }
+            {
+                let lock = cancel.lock().unwrap();
+                if *lock {
+                    break;
+                }
+            }
+        }
     }
 
     fn run(mut self) {
@@ -92,6 +112,7 @@ impl Waker {
                 );
                 pthread_mutex_unlock(&mut self.event_handle.e_mutex as *mut pthread_mutex_t);
             }
+            log::debug!("Woke-up");
             {
                 let lock = self.cancel.lock().unwrap();
                 if *lock {
@@ -108,6 +129,7 @@ impl Waker {
             pthread_mutex_destroy(&mut self.event_handle.e_mutex as *mut pthread_mutex_t);
         }
         *lock = true;
+        log::debug!("Waker thread dropped.");
     }
 }
 

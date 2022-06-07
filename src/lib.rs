@@ -182,6 +182,7 @@ impl Ftdi {
     }
 }
 
+#[derive(Debug)]
 enum Command {
     Cancel,
     PollRead,
@@ -223,16 +224,17 @@ impl Handler {
             let _ = open_channel.send(Err(status_to_io_error(status)));
             return;
         }
-        if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
-            let _ = open_channel.send(Err(status_to_io_error(status)));
-            return;
-        }
+        // if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
+        //     let _ = open_channel.send(Err(status_to_io_error(status)));
+        //     return;
+        // }
 
         if let Err(x) = Self::apply_params(&mut device, &params) {
             let _ = open_channel.send(Err(x));
             return;
         }
 
+        log::debug!("Device configuration succeeded, spawning waker.");
         let waker = match Waker::spawn(&mut device, command_tx.clone()) {
             Ok(x) => x,
             Err(err) => {
@@ -255,6 +257,7 @@ impl Handler {
             let _ = this.event_tx.send(Event(Err(err)));
         }
         let _ = this.device.close();
+        log::debug!("Device handler thread dropped.");
     }
 
     fn apply_params(device: &mut FtdiBase, params: &SerialParams) -> io::Result<()> {
@@ -274,23 +277,26 @@ impl Handler {
     }
 
     fn send_data(&mut self, data: Vec<u8>) -> io::Result<()> {
+        log::debug!("Sending data... {:?}", data);
         let mut start_idx = 0;
         loop {
             match self.device.write_all(&data[start_idx..]) {
                 Ok(_) => break,
                 Err(TimeoutError::Timeout { actual, .. }) => {
+                    log::debug!("Send timeout occurred. Only sent {} bytes", actual);
                     start_idx += actual;
                 }
                 Err(TimeoutError::FtStatus(status)) => {
+                    log::debug!("Send error: {:?}", status);
                     return Err(status_to_io_error(status));
                 }
             }
         }
+        log::debug!("send_data() returned.");
         Ok(())
     }
 
-    fn poll_read(&mut self) -> io::Result<Vec<u8>> {
-        let num_bytes = self.device.queue_status().map_err(status_to_io_error)?;
+    fn poll_read(&mut self, num_bytes: usize) -> io::Result<Vec<u8>> {
         let mut buf = vec![0_u8; num_bytes];
         log::debug!("ftdi read_all: {} bytes in queue", num_bytes);
         let ret = match self.device.read_all(&mut buf) {
@@ -311,12 +317,16 @@ impl Handler {
 
     fn run_loop(&mut self) -> io::Result<()> {
         while let Some(msg) = self.command_rx.blocking_recv() {
+            log::debug!("Received command: {:?}", msg);
             match msg {
                 Command::Cancel => break,
                 Command::PollRead => {
-                    let data = self.poll_read()?;
-                    if self.event_tx.send(Event(Ok(data))).is_err() {
-                        break;
+                    let num_bytes = self.device.queue_status().map_err(status_to_io_error)?;
+                    if num_bytes != 0 {
+                        let data = self.poll_read(num_bytes)?;
+                        if self.event_tx.send(Event(Ok(data))).is_err() {
+                            break;
+                        }
                     }
                 }
                 Command::Send(data) => self.send_data(data)?,
