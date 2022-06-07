@@ -22,4 +22,5 @@ windows-sys = {version = "0.36", features = [
 ]}
 
 [patch.crates-io]
-libftd2xx-ffi = {git = "https://github.com/raffber/libftd2xx-ffi.git", rev="f9f2b436207b3362a9adcca5684bcedcc8128143"}
+# libftd2xx-ffi = {git = "https://github.com/raffber/libftd2xx-ffi.git", rev="f9f2b436207b3362a9adcca5684bcedcc8128143"}
+libftd2xx-ffi = {path = "../libftd2xx-ffi"}

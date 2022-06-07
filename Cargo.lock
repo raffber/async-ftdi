@@ -65,7 +65,6 @@ dependencies = [
 [[package]]
 name = "libftd2xx-ffi"
 version = "0.8.4"
-source = "git+https://github.com/raffber/libftd2xx-ffi.git?rev=f9f2b436207b3362a9adcca5684bcedcc8128143#f9f2b436207b3362a9adcca5684bcedcc8128143"
 dependencies = [
  "cfg-if",
 ]
