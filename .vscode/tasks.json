@@ -7,7 +7,10 @@
 			"problemMatcher": [
 				"$rustc"
 			],
-			"group": "build",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
 			"label": "rust: cargo build"
 		},
 		{
@@ -20,12 +23,9 @@
 			"args": [
 				"build",
 				"--target",
-				"x86_64-pc-windows-gnu",
+				"x86_64-pc-windows-gnu"
 			],
-			"group": {
-				"kind": "build",
-				"isDefault": true
-			},
+			"group": "build"
 		}
 	]
 }

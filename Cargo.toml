@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "^1", features = ["sync", "time", "rt", "macros", "rt-multi-thread", "io-util"] }
-libftd2xx-ffi = "0.8.4"
+libftd2xx-ffi = { version ="0.8.4", features = ["static"]}
 
 [dependencies.libftd2xx]
 version = "0.32"

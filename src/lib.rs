@@ -141,8 +141,8 @@ impl Ftdi {
         })
     }
 
-    pub async fn close(self) -> io::Result<()> {
-        todo!()
+    pub fn close(self) {
+        let _ = self.command_tx.send(Command::Cancel);
     }
 
     fn push_to_output_buffer(&mut self, buf: &mut tokio::io::ReadBuf<'_>) -> bool {
@@ -219,6 +219,10 @@ impl Handler {
         if let Err(status) =
             device.set_timeouts(Duration::from_millis(100), Duration::from_millis(100))
         {
+            let _ = open_channel.send(Err(status_to_io_error(status)));
+            return;
+        }
+        if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
             let _ = open_channel.send(Err(status_to_io_error(status)));
             return;
         }

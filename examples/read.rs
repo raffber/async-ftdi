@@ -24,8 +24,7 @@ async fn main() -> io::Result<()> {
     task::spawn(reader_and_cancel(ftdi, shutdown_rx));
     sleep(Duration::from_secs(2)).await;
     let _ = shutdown_tx.send(());
-
-    todo!();
+    Ok(())
 }
 
 async fn reader_and_cancel(ftdi: Ftdi, shutdown: oneshot::Receiver<()>) {
@@ -40,6 +39,7 @@ async fn reader(mut ftdi: Ftdi) -> io::Result<()> {
     loop {
         let x = ftdi.read_u8().await?;
         print!("0x{:x} ", x);
+        print_cnt += 1;
         if print_cnt == 8 {
             print!("\n");
             print_cnt = 0;
