@@ -224,10 +224,14 @@ impl Handler {
             let _ = open_channel.send(Err(status_to_io_error(status)));
             return;
         }
-        // if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
-        //     let _ = open_channel.send(Err(status_to_io_error(status)));
-        //     return;
-        // }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
+                let _ = open_channel.send(Err(status_to_io_error(status)));
+                return;
+            }
+        }
 
         if let Err(x) = Self::apply_params(&mut device, &params) {
             let _ = open_channel.send(Err(x));
