@@ -94,6 +94,7 @@ pub fn status_to_io_error(status: FtStatus) -> io::Error {
     io::Error::new(io::ErrorKind::Other, status.to_string())
 }
 
+#[derive(Debug)]
 pub struct Ftdi {
     buffer: VecDeque<u8>,
     command_tx: UnboundedSender<Command>,
@@ -104,7 +105,7 @@ pub struct Ftdi {
 pub use libftd2xx::DeviceInfo;
 
 impl Ftdi {
-    pub async fn list_all() -> io::Result<Vec<DeviceInfo>> {
+    pub async fn list_devices() -> io::Result<Vec<DeviceInfo>> {
         spawn_blocking(|| list_devices().map_err(status_to_io_error))
             .await
             .unwrap()

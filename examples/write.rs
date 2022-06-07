@@ -8,7 +8,7 @@ use tokio::time::sleep;
 async fn main() -> io::Result<()> {
     env_logger::init();
 
-    let ftdis = Ftdi::list_all().await?;
+    let ftdis = Ftdi::list_devices().await?;
     if ftdis.len() == 0 {
         println!("Not FTDIs connected!");
         return Ok(());
