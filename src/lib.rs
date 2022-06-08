@@ -179,19 +179,17 @@ impl Ftdi {
     }
 
     fn push_to_output_buffer(&mut self, buf: &mut tokio::io::ReadBuf<'_>) -> bool {
-        if !self.buffer.is_empty() {
-            loop {
-                if buf.remaining() == 0 {
-                    return true;
-                }
-                if let Some(x) = self.buffer.pop_front() {
-                    buf.put_slice(&[x]);
-                } else {
-                    break;
-                }
+        if self.buffer.is_empty() || buf.remaining() == 0 {
+            return false;
+        }
+        while buf.remaining() != 0 {
+            if let Some(x) = self.buffer.pop_front() {
+                buf.put_slice(&[x]);
+            } else {
+                break;
             }
         }
-        return buf.remaining() == 0;
+        true
     }
 
     fn poll_event_queue(&mut self) -> io::Result<()> {
