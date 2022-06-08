@@ -358,9 +358,9 @@ impl Handler {
 
     fn run_loop(&mut self) -> io::Result<()> {
         while let Some(msg) = self.command_rx.blocking_recv() {
-            log::debug!("Received command: {:?}", msg);
             match msg {
                 Command::Cancel => {
+                    log::debug!("Canceling run loop.");
                     break;
                 }
                 Command::PollRead => {
@@ -374,7 +374,11 @@ impl Handler {
                 }
                 Command::Send(data) => self.send_data(data)?,
                 Command::SetParams { params, answer } => {
+                    log::debug!("Applying new params: {:?}", params);
                     let result = Self::apply_params(&mut self.device, &params);
+                    if let Err(x) = result.as_ref() {
+                        log::debug!("Applying params failed: {:?}", x);
+                    }
                     let _ = answer.send(result);
                 }
             }
