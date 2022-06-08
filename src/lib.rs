@@ -259,7 +259,6 @@ impl Handler {
             return;
         }
 
-        #[cfg(target_os = "windows")]
         if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
             let _ = open_channel.send(Err(status_to_io_error(status)));
             return;
