@@ -14,7 +14,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tokio::{sync::mpsc::UnboundedSender, task, time::sleep};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{status_to_io_error, Command};
 

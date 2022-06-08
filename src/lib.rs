@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
 use std::io::ErrorKind;
 use std::pin::Pin;
@@ -100,6 +101,7 @@ pub struct Ftdi {
     command_tx: UnboundedSender<Command>,
     event_rx: UnboundedReceiver<Event>,
     error: Option<io::Error>,
+    shutdown_rx: Option<oneshot::Receiver<()>>,
 }
 
 pub use libftd2xx::DeviceInfo;
@@ -115,6 +117,7 @@ impl Ftdi {
         let (open_tx, open_rx) = oneshot::channel();
         let (command_tx, command_rx) = unbounded_channel();
         let (event_tx, event_rx) = unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         thread::spawn({
             let event_tx = event_tx.clone();
             let params = params.clone();
@@ -128,6 +131,7 @@ impl Ftdi {
                     command_tx,
                     command_rx,
                     event_tx,
+                    shutdown_tx,
                 )
             }
         });
@@ -139,11 +143,14 @@ impl Ftdi {
             command_tx,
             event_rx,
             error: None,
+            shutdown_rx: Some(shutdown_rx),
         })
     }
 
-    pub fn close(self) {
-        let _ = self.command_tx.send(Command::Cancel);
+    pub async fn close(mut self) {
+        if self.command_tx.send(Command::Cancel).is_ok() {
+            let _ = self.shutdown_rx.take().unwrap().await;
+        }
     }
 
     fn push_to_output_buffer(&mut self, buf: &mut tokio::io::ReadBuf<'_>) -> bool {
@@ -196,6 +203,7 @@ struct Handler {
     event_tx: UnboundedSender<Event>,
     _waker: WakerHandle,
     device: FtdiBase,
+    close_sender: oneshot::Sender<()>,
 }
 
 fn clone_io_error(err: &io::Error) -> io::Error {
@@ -210,6 +218,7 @@ impl Handler {
         command_tx: UnboundedSender<Command>,
         command_rx: UnboundedReceiver<Command>,
         event_tx: UnboundedSender<Event>,
+        shutdown_tx: oneshot::Sender<()>,
     ) {
         let mut device = match FtdiBase::with_serial_number(&serial_number) {
             Ok(device) => device,
@@ -226,11 +235,9 @@ impl Handler {
         }
 
         #[cfg(target_os = "windows")]
-        {
-            if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
-                let _ = open_channel.send(Err(status_to_io_error(status)));
-                return;
-            }
+        if let Err(status) = device.set_latency_timer(Duration::from_millis(2)) {
+            let _ = open_channel.send(Err(status_to_io_error(status)));
+            return;
         }
 
         if let Err(x) = Self::apply_params(&mut device, &params) {
@@ -255,12 +262,15 @@ impl Handler {
             event_tx,
             device,
             _waker: waker,
+            close_sender: shutdown_tx,
         };
 
         if let Err(err) = this.run_loop() {
             let _ = this.event_tx.send(Event(Err(err)));
         }
         let _ = this.device.close();
+        let _ = this.close_sender.send(());
+
         log::debug!("Device handler thread dropped.");
     }
 
@@ -323,7 +333,9 @@ impl Handler {
         while let Some(msg) = self.command_rx.blocking_recv() {
             log::debug!("Received command: {:?}", msg);
             match msg {
-                Command::Cancel => break,
+                Command::Cancel => {
+                    break;
+                }
                 Command::PollRead => {
                     let num_bytes = self.device.queue_status().map_err(status_to_io_error)?;
                     if num_bytes != 0 {
@@ -404,11 +416,21 @@ impl AsyncWrite for Ftdi {
     }
 
     fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         let _ = self.command_tx.send(Command::Cancel);
-        Poll::Ready(Ok(()))
+        if let Some(shutdown_rx) = self.shutdown_rx.as_mut() {
+            match Future::poll(Pin::new(shutdown_rx), cx) {
+                Poll::Ready(_) => {
+                    self.shutdown_rx.take();
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 
