@@ -55,7 +55,7 @@ pub enum DataBits {
     Eight,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SerialParams {
     pub baud: u32,
     pub data_bits: DataBits,
@@ -93,6 +93,10 @@ impl From<Parity> for libftd2xx::Parity {
 
 pub fn status_to_io_error(status: FtStatus) -> io::Error {
     io::Error::new(io::ErrorKind::Other, status.to_string())
+}
+
+fn disconnected_error() -> io::Error {
+    io::Error::new(ErrorKind::Other, "Channel Disconnected")
 }
 
 #[derive(Debug)]
@@ -153,6 +157,27 @@ impl Ftdi {
         }
     }
 
+    pub async fn set_params(&mut self, params: SerialParams) -> io::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(Command::SetParams { params, answer: tx })
+            .is_err()
+        {
+            self.error = Some(disconnected_error());
+            return Err(disconnected_error());
+        }
+        match rx.await {
+            Ok(x) => {
+                if let Err(x) = &x {
+                    self.error = Some(clone_io_error(x));
+                }
+                x
+            }
+            Err(_) => Err(disconnected_error()),
+        }
+    }
+
     fn push_to_output_buffer(&mut self, buf: &mut tokio::io::ReadBuf<'_>) -> bool {
         if !self.buffer.is_empty() {
             loop {
@@ -180,9 +205,7 @@ impl Ftdi {
                     self.error = Some(x);
                     return Err(ret);
                 }
-                Err(TryRecvError::Disconnected) => {
-                    return Err(io::Error::new(ErrorKind::Other, "Channel Disconnected"))
-                }
+                Err(TryRecvError::Disconnected) => return Err(disconnected_error()),
                 Err(TryRecvError::Empty) => return Ok(()),
             }
         }
@@ -194,6 +217,10 @@ enum Command {
     Cancel,
     PollRead,
     Send(Vec<u8>),
+    SetParams {
+        params: SerialParams,
+        answer: oneshot::Sender<io::Result<()>>,
+    },
 }
 
 struct Event(io::Result<Vec<u8>>);
@@ -346,6 +373,10 @@ impl Handler {
                     }
                 }
                 Command::Send(data) => self.send_data(data)?,
+                Command::SetParams { params, answer } => {
+                    let result = Self::apply_params(&mut self.device, &params);
+                    let _ = answer.send(result);
+                }
             }
         }
         Ok(())
