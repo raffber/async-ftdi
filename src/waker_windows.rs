@@ -3,6 +3,7 @@ use std::{
     io, ptr,
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use libftd2xx::{Ftdi as FtdiBase, FtdiCommon};
@@ -45,15 +46,34 @@ impl Waker {
         };
         let cancel = Arc::new(Mutex::new(false));
 
+        thread::spawn({
+            let cancel = cancel.clone();
+            let command_tx = command_tx.clone();
+            move || Self::notifier(cancel, command_tx)
+        });
+
         let waker = Waker {
             cancel: cancel.clone(),
             event,
             command_tx,
         };
-
         thread::spawn(move || waker.run());
-
         Ok(WakerHandle { cancel, event })
+    }
+
+    fn notifier(cancel: Arc<Mutex<bool>>, tx: UnboundedSender<Command>) {
+        loop {
+            thread::sleep(Duration::from_millis(20));
+            if tx.send(Command::PollRead).is_err() {
+                return;
+            }
+            {
+                let lock = cancel.lock().unwrap();
+                if *lock {
+                    break;
+                }
+            }
+        }
     }
 
     fn run(self) {
