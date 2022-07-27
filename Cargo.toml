@@ -2,12 +2,20 @@
 name = "async-ftdi"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "^1", features = ["sync", "time", "rt", "macros", "rt-multi-thread", "io-util"] }
-libftd2xx-ffi = { version ="0.8.4", features = ["static"]}
+tokio = { version = "^1", features = [
+    "sync",
+    "time",
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "io-util",
+] }
+libftd2xx-ffi = { version = "0.8.4", features = ["static"] }
 log = "0.4"
 
 [dependencies.libftd2xx]
@@ -15,15 +23,18 @@ version = "0.32"
 features = ["static"]
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2" 
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = {version = "0.36", features = [
-    "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_System_WindowsProgramming" 
-]}
+windows-sys = { version = "0.36", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_WindowsProgramming",
+] }
 
 [dev-dependencies]
 env_logger = "0.8.4"
 
 [patch.crates-io]
-libftd2xx-ffi = {git = "https://github.com/raffber/libftd2xx-ffi.git", rev="b14b48ce338b178f2bc25297e60f0eff5e23526c"}
+libftd2xx-ffi = { git = "https://github.com/raffber/libftd2xx-ffi.git", rev = "b14b48ce338b178f2bc25297e60f0eff5e23526c" }
