@@ -1,14 +1,15 @@
 # async-ftdi
 
-Library on top of [`libftd2xx`](https://github.com/ftdi-rs/libftd2xx/) implementing asynchronous IO.
+Library on top of [`libftd2xx`](https://github.com/ftdi-rs/libftd2xx/) implementing asynchronous IO for FTDI devices.
 
 This crate exposes an `FTDI` struct which implements both `AsyncRead` as well `AsyncWrite`.
+This crate depends on the `tokio` ecosystem.
 
 ## OS Support
 
 This crate has only been tested with the following targets:
 
-* `x86_64-pc-windows-msvc`
+* `x86_64-pc-windows-msvc` (it builds with [`cargo xwin`](https://github.com/messense/cargo-xwin))
 * `x86_64-unknown-linux-gnu`
 
 ## Reader Example
