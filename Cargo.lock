@@ -105,8 +105,9 @@ dependencies = [
 
 [[package]]
 name = "libftd2xx-ffi"
-version = "0.8.4"
-source = "git+https://github.com/raffber/libftd2xx-ffi.git?rev=b14b48ce338b178f2bc25297e60f0eff5e23526c#b14b48ce338b178f2bc25297e60f0eff5e23526c"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40bed7f53ea45282e0e4f1361d1a8094e62abe0ccfd9a6dbf7e3db932b2789ce"
 dependencies = [
  "cfg-if",
 ]

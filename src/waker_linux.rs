@@ -43,17 +43,26 @@ impl Waker {
     ) -> io::Result<WakerHandle> {
         let handle = device.handle();
 
-        let mut eh = unsafe {
-            Box::new(EventHandle {
-                e_cond_var: MaybeUninit::uninit().assume_init(),
-                e_mutex: MaybeUninit::uninit().assume_init(),
-                i_var: 0,
-            })
+        let mut cond = MaybeUninit::<pthread_cond_t>::uninit();
+        let mut mutex = MaybeUninit::<pthread_mutex_t>::uninit();
+
+        let (cond, mutex) = unsafe {
+            let ok = pthread_mutex_init(mutex.as_mut_ptr(), null());
+            if ok != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let ok = pthread_cond_init(cond.as_mut_ptr(), null());
+            if ok != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            (cond.assume_init(), mutex.assume_init())
         };
-        unsafe {
-            pthread_mutex_init(&mut eh.e_mutex as *mut pthread_mutex_t, null());
-            pthread_cond_init(&mut eh.e_cond_var as *mut pthread_cond_t, null());
-        };
+
+        let mut eh = Box::new(EventHandle {
+            e_cond_var: cond,
+            e_mutex: mutex,
+            i_var: 0,
+        });
 
         let event_mask = FT_EVENT_RXCHAR;
         let status: FT_STATUS = unsafe {
@@ -65,8 +74,8 @@ impl Waker {
         };
         if status != 0 {
             unsafe {
-                pthread_cond_destroy(&mut eh.e_cond_var as *mut pthread_cond_t);
-                pthread_mutex_destroy(&mut eh.e_mutex as *mut pthread_mutex_t);
+                let _ = pthread_cond_destroy(&mut eh.e_cond_var as *mut pthread_cond_t);
+                let _ = pthread_mutex_destroy(&mut eh.e_mutex as *mut pthread_mutex_t);
             }
             return Err(status_to_io_error(FtStatus::from(status)));
         }
